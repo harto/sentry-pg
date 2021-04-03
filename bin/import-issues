@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+## Imports issues for a given Sentry project.
+##
+## Usage: import-issues [-q QUERY] PROJECT_SLUG DB
+
+cd "$(dirname "$0")"/..
+
+query=is:unresolved
+
+while getopts ":q:" opt; do
+  case $opt in
+    q) query="$OPTARG" ;;
+    *) echo "invalid option: $opt" >&2 exit 1 ;;
+  esac
+done
+shift $(( OPTIND - 1 ))
+
+slug=$1
+db=$2
+
+echo "[import-issues] importing $slug issues matching '$query'" >&2
+
+next_url="https://sentry.io/api/0/projects/$slug/issues/?statsPeriod=14d&$(jq -rRs @uri <<<"$query")"
+
+data=$(
+  while [[ -n $next_url ]]; do
+    page=$(bin/fetch-page "$next_url")
+    next_url=$(jq -r '.next' <<<"$page")
+    jq '.results' <<<"$page"
+  done | jq -s 'add'
+)
+
+psql -q "$db" <<-EOF
+  CREATE TEMPORARY TABLE new_issues AS (SELECT * FROM issues LIMIT 0);
+  INSERT INTO new_issues
+    SELECT * FROM json_populate_recordset(null::new_issues, '${data//\'/\'\'}');
+  BEGIN;
+  -- We want to do an INSERT … ON CONFLICT UPDATE, but that requires specifying
+  -- all the columns that we want to update. Therefore it's easier to just
+  -- delete the conflicting rows first.
+  DELETE FROM issues WHERE id IN (SELECT id FROM new_issues);
+  INSERT INTO issues SELECT * FROM new_issues;
+  COMMIT;
+EOF

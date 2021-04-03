@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+## Imports previously-unseen events for a given issue.
+##
+## Usage: import-events ISSUE_ID DB
+##
+## Simplifying assumptions:
+##  - API returns events in reverse chronological order
+##  - events are immutable
+
+cd "$(dirname "$0")"/..
+
+issue_id="$1"
+db="$2"
+
+echo "[import-events] importing events for issue $issue_id" >&2
+
+next_url="https://sentry.io/api/0/issues/$issue_id/events/"
+
+last_known_event=$(psql -qAt "$db" <<-EOF
+  SELECT id FROM events WHERE "groupID" = '$issue_id'
+  ORDER BY "dateCreated" DESC LIMIT 1;
+EOF
+)
+
+data=$(
+  while true; do
+    page=$(bin/fetch-page "$next_url")
+    next_url=$(jq -r '.next' <<<"$page")
+    jq '.results' <<<"$page"
+
+    if [[ -z $next_url ]]; then
+      echo '[import-events] reached last page; stopping' >&2
+      break
+    elif [[
+           -n $last_known_event &&
+           -n $(jq -r --arg id "$last_known_event" \
+                  '.results[] | select(.id == $id)' <<<"$page")
+         ]]; then
+      echo '[import-events] saw previously-imported event; stopping' >&2
+      break
+    fi
+  done | jq -s 'add'
+)
+
+psql -q "$db" <<-EOF
+  BEGIN;
+  INSERT INTO events
+    SELECT * FROM json_populate_recordset(null::events, '${data//\'/\'\'}')
+    ON CONFLICT DO NOTHING;
+  COMMIT;
+EOF

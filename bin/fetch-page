@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+## Fetches a single page of a multi-page JSON result set.
+##
+## Usage: fetch-next URL
+##
+## Results are nested under a "results" key, and the next page URL under "next".
+
+url="$1"
+
+tmp=$(mktemp -d)
+
+echo -n "[fetch-page] $url ... " >&2
+
+curl --fail --silent --show-error \
+     --header "Authorization: Bearer $SENTRY_TOKEN" \
+     --dump-header "$tmp/headers" \
+     --output "$tmp/results" \
+     "$url"
+
+# Pagination is implemented as a `Link` header, e.g.:
+#
+#   Link: <https://…>; rel="previous"; results="false"; cursor="…",
+#     <https://…>; rel="next"; results="true"; cursor="…"
+#
+# See: https://docs.sentry.io/api/pagination/
+next_link=$(grep ^link "$tmp/headers" \
+              | tr ',' '\n' \
+              | grep 'rel="next"')
+
+next_url=
+if grep -q 'results="true"' <<<"$next_link"; then
+  next_url=$(sed 's/.*<\(.*\)>.*/\1/' <<<"$next_link")
+fi
+
+echo "ok" >&2
+
+jq --arg next "$next_url" '{ results: ., next: $next }' "$tmp/results"
+
+rm -rf "$tmp"

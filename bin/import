@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+## Imports issues and events for a given Sentry project into a Postgres DB.
+##
+## Usage:
+##   import [-q QUERY] [-t TOKEN] PROJECT_SLUG DB
+##
+## Options:
+##   -q QUERY      optional issue query (defaults to all unresolved issues)
+##   -t TOKEN      API token
+##
+## An API token can alternatively be set via the SENTRY_TOKEN env var.
+##
+## Arguments:
+##   PROJECT_SLUG  Sentry project slug (e.g. acme/client)
+##   DB            Postgres DB name or DSN
+##
+
+cd "$(dirname "$0")"/..
+
+usage() {
+  grep '^##' "${BASH_SOURCE[0]}" | cut -c4- >&2
+}
+
+issue_opts=()
+
+while getopts ":hq:t:" opt; do
+  case $opt in
+    t) export SENTRY_TOKEN="$OPTARG" ;;
+    q) issue_opts+=(-q "$OPTARG") ;;
+    h) usage; exit 0 ;;
+    *) usage; exit 1 ;;
+  esac
+done
+shift $(( OPTIND - 1 ))
+
+if (( $# != 2 )); then
+  echo "Error: wrong number of arguments (expected 2, got $#)" >&2
+  usage
+  exit 1
+fi
+
+slug=$1
+db=$2
+
+bin/import-issues "${issue_opts[@]}" "$slug" "$db"
+
+psql -qAt -c 'SELECT id FROM issues' "$db" | while read -r issue_id; do
+  bin/import-events "$issue_id" "$db"
+done
+
+printf 'Imported %d issues, %d events\n' \
+       "$(psql -qAtc 'SELECT COUNT(*) FROM issues' "$db")" \
+       "$(psql -qAtc 'SELECT COUNT(*) FROM events' "$db")" >&2
+
+warnings=$(psql -qAtf "lib/validate.sql" "$db")
+if [[ -n $warnings ]]; then
+  echo "Warnings:" >&2
+  echo "$warnings" >&2
+fi

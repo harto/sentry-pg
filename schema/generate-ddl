@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+table_name=$(basename "$1" .json)
+
+echo "CREATE TABLE $table_name ("
+jq -r '
+  def db_type:
+    "\(
+       if (.type == "string") then "VARCHAR"
+       elif (.type == "integer") then "INTEGER"
+       elif (.type == "boolean") then "BOOLEAN"
+       else "JSONB"
+       end
+     )\(
+       if .nullable then "" else " NOT NULL" end
+     )"
+  ;
+
+  .items.properties as $properties |
+  .items.required
+    | map("\"\(.)\" \(. as $k | .=$properties | getpath([$k]) | db_type)")
+    | join(",\n")
+' "$1"
+echo ');'
+echo
+
+# The JSON schema doesn't specify a primary key, so assume `id`.
+echo "ALTER TABLE $table_name ADD PRIMARY KEY (id);"
+echo
