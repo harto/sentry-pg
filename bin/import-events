@@ -16,7 +16,7 @@ db="$2"
 
 echo "[import-events] importing events for issue $issue_id" >&2
 
-next_url="https://sentry.io/api/0/issues/$issue_id/events/"
+next_url="https://sentry.io/api/0/issues/$issue_id/events/?full=true"
 
 last_known_event=$(psql -qAt "$db" <<-EOF
   SELECT id FROM events WHERE "groupID" = '$issue_id'
